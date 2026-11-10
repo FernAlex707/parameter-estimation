@@ -5,9 +5,9 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.17.3
+#       jupytext_version: 1.19.6
 #   kernelspec:
-#     display_name: Python 3
+#     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
@@ -106,9 +106,28 @@ plt.show()
 # %%
 def cA_model(times, kf, kr):
     """C_A (mol/L) at each of `times` (s), for rate constants kf and kr (1/s)."""
+
+    def reactor_ode(t,y):
+        cA = y[0]
+        return [-kf * cA + kr * (cA0 - cA)]
+
+    solution = scipy.integrate.solve_ivp(reactor_ode, (0, max(times)), [cA0], t_eval=times)
+
+    if not solution.success:
+        raise RuntimeError(solution.message)
     
+    return solution.y[0]
 
+kf_test = 0.02
+kr_test = 0.01
 
+cA_eq = cA0 * kr_test / (kf_test + kr_test)
+cA_exact = cA_eq + (cA0 - cA_eq) * np.exp(-(kf_test + kr_test) * times)
+cA_numerical = cA_model(times, kf_test, kr_test)
+
+assert np.allclose(cA_numerical, cA_exact, rtol = 1e-3)
+
+print("a")
 # your test here
 
 
@@ -120,8 +139,32 @@ def cA_model(times, kf, kr):
 # from the data. Roughly how long does $C_A$ take to get halfway to where it ends up?
 
 # %%
+cA_obs = cA_data[298.15]
+
+try:
+    params_default, cov_default = scipy.optimize.curve_fit(cA_model, times, cA_obs)
+    print("Default Parameters:", params_default)
+    print("Predicted CA:", cA_model(times, *params_default))
+
+except Exception as error:
+    print("Fit Failed:", error)
+    print("Default Prediction:", cA_model(times, 1, 1))
 
 # %%
+guess = [0.02, 0.01]
+
+params_fit, cov_fit = scipy.optimize.curve_fit(cA_model, times, cA_obs, p0 = guess)
+
+kf_fit, kr_fit = params_fit
+print("kf =", kf_fit, "1/s")
+print("kr =", kr_fit, "1/s")
+
+# %%
+# Without the p0, curve_fit returned a kf value of 0.5990 1/s and kr value of 1.08233 1/s. 
+# Using these values, it was predicted that the concentration will stay relatively close
+# to 6.44 mol/L. This is likely the result of the model reaching equilibrium quickly.
+# It reaches halfway at about 20 seconds. The initial guess was [0.02, 0.01] and was
+# obtained entirely through AI, and was clearly a great initial guess.
 
 # %% [markdown]
 # **(c) Look at it.** Plot the data and the fitted curve, and below it the residuals
@@ -131,6 +174,32 @@ def cA_model(times, kf, kr):
 # choose it?
 
 # %%
+cA_fit = cA_model(times, kf_fit, kr_fit)
+residuals = cA_obs - cA_fit
+errors = np.sqrt(np.diag(cov_fit))
+
+plt.figure()
+plt.plot(times, cA_obs, 'o', label = 'Data')
+plt.plot(times, cA_fit, '-', label = 'Fit')
+plt.xlabel('Time (s)')
+plt.ylabel('cA (mol/L)')
+plt.legend()
+plt.show()
+
+plt.figure()
+plt.plot(times, residuals, 'o')
+plt.plot(0, color = 'black', linestyle = '--')
+plt.xlabel('Time (s)')
+plt.ylabel('Residual (mol/L)')
+plt.show()
+
+print(f"kf = {kf_fit:.5f} +/- {errors[0]:.5f} 1/s")
+print(f"kr = {kr_fit:.5f} +/- {errors[1]:.5f} 1/s")
+
+# %%
+# The rate constants of the forward and reverse reactions came out to be kf = 0.01679 +/- 0.00079 1/s and 0.02004 +/- 0.00154 1/s, respectively.
+# The curve above follows the experimental data closely, and the residuals fluctuate with 0 patterns. The default fit without p0 was far less
+# accurate since it approached equilibrium far too quickly.
 
 # %% [markdown]
 # *Answer:*
@@ -145,6 +214,24 @@ def cA_model(times, kf, kr):
 # or exothermic? How can you tell?
 
 # %%
+results = []
+
+for T, cA in cA_data.items():
+    params, cov = scipy.optimize.curve_fit(cA_model, times, cA, p0 = guess)
+    kf, kr = params
+    errors = np.sqrt(np.diag(cov))
+    K = kf / kr
+    
+    results.append([T, kf, errors[0], kr, errors[1], K])
+
+print("T (K) | kf +/- | kr | kr +/- | K")
+for row in results:
+    print([round(x, 5) for x in row])
+
+# %%
+#  The reaction is endothermic because the equilibrium constant increases with temperature.
+#  K increased from 0.83773 to 1.00055, as T, in Kelvin, increases from 298.15 to 308.15.
+#  Therefore, higher temperatures favor the forward reaction.
 
 # %% [markdown]
 # **(b) Arrhenius.** As in Lecture 13: `scipy.stats.linregress` on $\ln k_f$ against
@@ -158,6 +245,33 @@ def cA_model(times, kf, kr):
 # $\Delta H$ agree with what you said in (a)?
 
 # %%
+T = np.array([row[0] for row in results])
+kf = np.array([row[1] for row in results])
+kr = np.array([row[3] for row in results])
+
+K = kf/kr
+fit = scipy.stats.linregress(1/T, np.log(kf))
+
+Ea = -fit.slope * R
+Ea_error = fit.stderr * R
+
+A = np.exp(fit.intercept)
+logA = fit.intercept / np.log(10)
+logA_error = fit.intercept_stderr / np.log(10)
+
+print(f"Ea = {Ea:.2f} +/- {Ea_error:.2f} J/mol")
+print(f"log10(A) = {logA:.4f}")
+print(f"log10(A) = {logA:.4f} +/- {logA_error:.4f}")
+
+# %%
+fit_K = scipy.stats.linregress(1/T, np.log(K))
+dH = -fit_K.slope * R
+dS = fit_K.intercept * R
+dH_error = fit_K.stderr * R
+dS_error = fit_K.intercept_stderr * R
+
+print(f"dH = {dH:.2f} +/- {dH_error:.2f} J/mol")
+print(f"dS = {dS:.2f} +/- {dS_error:.2f} J/mol/K")
 
 # %% [markdown]
 # **(d)** `linregress` gave you a ± on each of these. What does that ± know about,
@@ -165,7 +279,10 @@ def cA_model(times, kf, kr):
 # the ± you got in (a).
 
 # %% [markdown]
-# *Answer:*
+# *Answer:* The uncertainties from the lineregress command describe the overall uncertainty in the slope and intercept.
+# However, they leave out the potential uncertainties of the rate constant, that was brought up in problem 1
+# The uncertainty was also limited, since only three temperature points were used. Therefore, it only described the 
+# uncertainty from the linear regression and not the total uncertainty of any of the parameters.
 
 # %% [markdown]
 # ## 3. All the data at once
@@ -206,16 +323,56 @@ print(T_all[:12], t_all[:12], cA_all[:12], sep='\n')
 def cA_model_all(x, log10A, Ea, dH, dS):
     """C_A (mol/L) for every (T, t) pair in x. Ea and dH in kJ/mol, dS in J/mol/K."""
     T_col, t_col = x
+    cA_fit = np.zeros(len(t_col))
     
+    for T in np.unique(T_col):
+        kf = 10**log10A * np.exp(-Ea * 1000 / (R * T))
+        K = np.exp(-dH * 1000 / (R * T) + dS / R)
+        kr = kf / K
+        
+        mask = T_col == T
+        cA_fit[mask] = cA_model(t_col[mask], kf, kr)
+
+    return cA_fit
 
 
 # %%
+guess_another = [logA, Ea / 1000, dH / 1000, dS]
+
+params_another, cov_another = scipy.optimize.curve_fit(cA_model_all, x_all, cA_all, p0 = guess_another)
+errors_another = np.sqrt(np.diag(cov_another))
+
+for name, value, error in zip(["log10A", "Ea (kJ/mol)", "dH (kJ/mol)", "dS (J/mol/K)"], params_another, errors_another):
+    print(f"{name} = {value:.4f} +/- {error:.4f}")
 
 # %% [markdown]
 # **(b)** Now start from your estimates from before the experiments instead (6, 45, −10, −50).
 # Does it find the same answer? How far did the data move you from what you expected?
 
 # %%
+guess_again = [6, 45, -10, -50]
+params_again, cov_again = scipy.optimize.curve_fit(cA_model_all, x_all, cA_all, p0 = guess_again, method = "trf", x_scale = [1, 50, 10, 50], max_nfev = 20000)
+
+print("New Fit:", params_again)
+print("Previous Fit:", params_another)
+print("Difference:", params_again - params_another)
+
+# %%
+# Using AI, I came up with another set of initial values, which turned out to be great for this problem
+# The fitted parameters to the initial values are shown above in the "New Fit" list. The data across all
+# the two lists showed an increase from the initial values. No matter the number chosen in the list,
+# the new lists will have a larger value. This indicates the final fit is not dependent on the starting guess.
+
+# %%
+print("Task 2:", guess_another)
+print("Task 3:", params_another)
+print("Task 3 Errors:", errors_another)
+
+# %%
+# The parameter estimates of tasks 2 and 3 are not identical, but are somewhat similar. While task 3 uses
+# 30 measurements, task 2 first fits rate constants at each temperature and performed a regression on it.
+# The error bars are also different, with task 3 uses the measurements directly for error calculation.
+# Overall, I would trust task 3 more as it draws its conclusions directly from the measurements themselves.
 
 # %% [markdown]
 # **(c)** Compare with task 2. Are the centres the same? Are the error bars? Which set of
@@ -228,6 +385,13 @@ def cA_model_all(x, log10A, Ea, dH, dS):
 # If someone quotes only your four ± values, what are they missing?
 
 # %%
+correlation = cov_another / np.outer(errors_another, errors_another)
+print(np.round(correlation, 3))
+
+# %%
+# The strongest correlation of log10(A) and activation energy (Ea) and a second relationship between the change in enthalpy and entropy.
+# This occured because changes in one parameter, causes similar changes in another. Also, the other correlational relationships are negative
+# The issue with only quoting four values is that the correlational relationships cannot be properly collected / drawn.
 
 # %% [markdown]
 # *Answer:*
@@ -249,6 +413,27 @@ def cA_model_all(x, log10A, Ea, dH, dS):
 #   What would that tell you about your model, or about the experiment?
 
 # %%
+cA_fit = cA_model_all(x_all, *params_another)
+residuals = cA_all - cA_fit
+
+for T in temperatures:
+    mask = T_all == T
+    plt.plot(t_all[mask], residuals[mask], 'o-', label = f'{T} K')
+
+plt.axhline(0, color = 'black', linestyle = '--')
+plt.xlabel('Time (s)')
+plt.ylabel('Residual (mol/L)')
+plt.legend()
+plt.show()
+
+s = np.sqrt(np.sum(residuals**2) / (len(cA_all) - len(params_another)))
+print("Esitmated Measurement Scatter =", s, "mol/L")
+
+# %%
+# Around zero, the residuals are random; there is no pattern that can be drawn.This shows that the model fits the data well, 
+# especially since the scatter data points are quite similar for each temperature. The overall estimated measurement scatter
+# 0.88579 mol/L, which is also likely the value of the concentration measurement's uncertainty. If the uncertainty became 0.01
+# mol/L, then the residuals would be larger than the -0.2 to 0.2 interval. This likely means there were experimental errors.
 
 # %% [markdown]
 # *Answer:*
@@ -263,7 +448,12 @@ def cA_model_all(x, log10A, Ea, dH, dS):
 # correlated, the way $E_a$ and $A$ are here?
 
 # %% [markdown]
-# *Answer:*
+# *Answer:* My project is lowering the cost of designing catalytic converters, while not affecting the effectiveness of its catalysts.
+# The parameters that can be come from fitting data are the rate constants and effective affect of catalyst loading. While other values,
+# such as the diameter and catalyst loading will be varied. Literature will be used for fitting and varying the data. The uncertainty of
+# literature data can differ, since different experiments likely had different constraints and constants. This means that there is no
+# absolute error. As for correlation, the reaction rate constant and effective catalyst surface area can be correlated to one another.
+# This is because they have a proportional relationship: increase one, causes a proportional increase in the other.
 
 # %% [markdown]
 # ## Stretch problems (optional)
@@ -280,11 +470,7 @@ def cA_model_all(x, log10A, Ea, dH, dS):
 # $s$ from task 4. Do its 95% credible intervals (summed over the other parameter) agree with
 # `curve_fit`'s 95% confidence intervals? Why should they, or why not?
 
-# %%
-
-# %%
-
-# %% [markdown]
+# %% [markdown] jp-MarkdownHeadingCollapsed=true
 # ---
 #
 # ### When you're done
